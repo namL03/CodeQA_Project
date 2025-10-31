@@ -1,0 +1,11 @@
+# Core dependencies for CodeQA Seq2seq Model
+torch>=2.0.0
+numpy>=1.24.0
+tqdm>=4.65.0
+
+# Optional: For transformer baselines (if needed later)
+transformers>=4.30.0
+tokenizers>=0.13.0
+
+# Data handling
+pyyaml>=6.0
