@@ -35,21 +35,26 @@ class Decoder(nn.Module):
     
     def __init__(self,
                  vocab_size: int,
-                 embed_dim: int = 512,
-                 hidden_dim: int = 512,
-                 num_layers: int = 2,
-                 dropout: float = 0.3,
-                 attention_method: str = 'general'):
+                 embed_dim: int = 128,
+                 hidden_dim: int = 256,
+                 num_layers: int = 1,
+                 dropout: float = 0.0):
         """
         Initialize the decoder.
         
+        Following "Get To The Point" (See et al., 2017):
+        - Single-layer unidirectional LSTM
+        - Hidden size: 256
+        - Embedding size: 128
+        - Bahdanau attention
+        - No dropout in base model
+        
         Args:
             vocab_size: Size of the vocabulary
-            embed_dim: Dimension of word embeddings
-            hidden_dim: Dimension of LSTM hidden state (should match encoder)
-            num_layers: Number of LSTM layers
-            dropout: Dropout probability
-            attention_method: Type of attention ('general', 'concat', or 'dot')
+            embed_dim: Dimension of word embeddings (default: 128)
+            hidden_dim: Dimension of LSTM hidden state (default: 256)
+            num_layers: Number of LSTM layers (default: 1, as per paper)
+            dropout: Dropout probability (default: 0.0, as per paper)
         """
         super(Decoder, self).__init__()
         
@@ -61,7 +66,7 @@ class Decoder(nn.Module):
         # Word embedding layer
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
         
-        # LSTM (unidirectional, unlike encoder)
+        # Single-layer unidirectional LSTM (as per "Get To The Point" paper)
         self.lstm = nn.LSTM(
             input_size=embed_dim,
             hidden_size=hidden_dim,
@@ -70,16 +75,18 @@ class Decoder(nn.Module):
             batch_first=True
         )
         
-        # Attention mechanism
-        self.attention = Attention(hidden_dim, method=attention_method)
+        # Bahdanau attention mechanism
+        self.attention = Attention(hidden_dim)
         
         # Combine LSTM output and context vector
-        self.concat_layer = nn.Linear(hidden_dim * 2, hidden_dim)
+        # Input: hidden_dim + (hidden_dim * 2) because encoder is bidirectional
+        # Output: hidden_dim
+        self.concat_layer = nn.Linear(hidden_dim + hidden_dim * 2, hidden_dim)
         
         # Output projection to vocabulary
         self.output_projection = nn.Linear(hidden_dim, vocab_size)
         
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
     
     def forward(self,
                 input_token: torch.Tensor,
@@ -141,8 +148,8 @@ class Decoder(nn.Module):
         
         Args:
             encoder_hidden: Tuple of (hidden, cell) from encoder
-                - hidden: [num_layers * 2, batch_size, hidden_dim // 2]
-                - cell: [num_layers * 2, batch_size, hidden_dim // 2]
+                - hidden: [num_layers * 2, batch_size, hidden_dim]
+                - cell: [num_layers * 2, batch_size, hidden_dim]
         
         Returns:
             Decoder hidden state (hidden, cell)
@@ -151,26 +158,18 @@ class Decoder(nn.Module):
         """
         h, c = encoder_hidden
         
-        # Combine forward and backward directions
-        # Take forward and backward states and concatenate them
-        # h: [num_layers * 2, batch_size, hidden_dim // 2]
-        # We want: [num_layers, batch_size, hidden_dim]
+        # For "Get To The Point" paper setup:
+        # Encoder has 1 bidirectional layer: h is [2, batch_size, hidden_dim]
+        # Decoder has 1 unidirectional layer: we need [1, batch_size, hidden_dim]
         
-        # Reshape to separate layers and directions
-        num_layers = h.size(0) // 2
-        batch_size = h.size(1)
-        hidden_dim = h.size(2) * 2
+        # We take only the forward direction from the encoder
+        # (alternatively, could concatenate or use a linear projection)
+        # Following common practice: use forward direction of last encoder layer
         
-        # Forward states: even indices (0, 2, 4, ...)
-        # Backward states: odd indices (1, 3, 5, ...)
-        h_forward = h[0:num_layers * 2:2]  # [num_layers, batch_size, hidden_dim // 2]
-        h_backward = h[1:num_layers * 2:2]  # [num_layers, batch_size, hidden_dim // 2]
-        c_forward = c[0:num_layers * 2:2]
-        c_backward = c[1:num_layers * 2:2]
-        
-        # Concatenate forward and backward
-        decoder_h = torch.cat([h_forward, h_backward], dim=2)  # [num_layers, batch_size, hidden_dim]
-        decoder_c = torch.cat([c_forward, c_backward], dim=2)  # [num_layers, batch_size, hidden_dim]
+        # h: [2, batch_size, hidden_dim] -> [1, batch_size, hidden_dim]
+        # Index 0 is forward, index 1 is backward
+        decoder_h = h[0:1]  # Take forward direction [1, batch_size, hidden_dim]
+        decoder_c = c[0:1]  # Take forward direction [1, batch_size, hidden_dim]
         
         return decoder_h, decoder_c
 
@@ -182,33 +181,32 @@ if __name__ == "__main__":
     vocab_size = 10000
     batch_size = 4
     src_len = 50
-    hidden_dim = 512
-    embed_dim = 256
-    num_layers = 2
+    hidden_dim = 256  # Decoder hidden dim (Get To The Point paper)
+    embed_dim = 128   # Embedding dim (Get To The Point paper)
+    num_layers = 1    # Single layer (Get To The Point paper)
     
     # Create dummy inputs
     input_token = torch.randint(0, vocab_size, (batch_size, 1))
     
-    # Simulate encoder outputs
-    encoder_outputs = torch.randn(batch_size, src_len, hidden_dim)
+    # Simulate encoder outputs (bidirectional, so 512 dim)
+    encoder_outputs = torch.randn(batch_size, src_len, hidden_dim * 2)
     
-    # Simulate encoder hidden state (bidirectional, so doubled layers)
+    # Simulate encoder hidden state (bidirectional single layer)
     encoder_hidden = (
-        torch.randn(num_layers * 2, batch_size, hidden_dim // 2),
-        torch.randn(num_layers * 2, batch_size, hidden_dim // 2)
+        torch.randn(2, batch_size, hidden_dim),  # 2 directions, 256 each
+        torch.randn(2, batch_size, hidden_dim)
     )
     
     # Create source mask
     src_mask = torch.ones(batch_size, src_len)
     src_mask[0, 45:] = 0
     
-    # Create decoder
+    # Create decoder with "Get To The Point" paper settings
     decoder = Decoder(
         vocab_size=vocab_size,
-        embed_dim=embed_dim,
-        hidden_dim=hidden_dim,
-        num_layers=num_layers,
-        attention_method='general'
+        embed_dim=128,
+        hidden_dim=256,
+        num_layers=1
     )
     
     # Initialize decoder hidden from encoder
@@ -230,4 +228,4 @@ if __name__ == "__main__":
     print(f"Attention weights shape: {attn_weights.shape}")
     print(f"Attention weights sum: {attn_weights[0].sum().item():.4f} (should be ~1.0)")
     
-    print("\n✅ Decoder test passed!")
+    print("\n✅ Decoder test passed (matches 'Get To The Point' paper)!")

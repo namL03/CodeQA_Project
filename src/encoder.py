@@ -23,19 +23,25 @@ class Encoder(nn.Module):
     
     def __init__(self, 
                  vocab_size: int,
-                 embed_dim: int = 512,
-                 hidden_dim: int = 512,
-                 num_layers: int = 2,
-                 dropout: float = 0.3):
+                 embed_dim: int = 128,
+                 hidden_dim: int = 256,
+                 num_layers: int = 1,
+                 dropout: float = 0.0):
         """
         Initialize the encoder.
         
+        Following "Get To The Point" (See et al., 2017):
+        - Single-layer Bidirectional LSTM
+        - Hidden size: 256 per direction (512 total when concatenated)
+        - Embedding size: 128
+        - No dropout in base model
+        
         Args:
             vocab_size: Size of the vocabulary
-            embed_dim: Dimension of word embeddings
-            hidden_dim: Dimension of LSTM hidden state
-            num_layers: Number of LSTM layers
-            dropout: Dropout probability
+            embed_dim: Dimension of word embeddings (default: 128)
+            hidden_dim: Dimension of LSTM hidden state per direction (default: 256)
+            num_layers: Number of LSTM layers (default: 1, as per paper)
+            dropout: Dropout probability (default: 0.0, as per paper)
         """
         super(Encoder, self).__init__()
         
@@ -47,18 +53,18 @@ class Encoder(nn.Module):
         # Word embedding layer
         self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
         
-        # Bidirectional LSTM
-        # Note: hidden_dim will be split between forward and backward
+        # Single-layer Bidirectional LSTM (as per "Get To The Point" paper)
+        # Output will be hidden_dim * 2 (concatenation of forward and backward)
         self.lstm = nn.LSTM(
             input_size=embed_dim,
-            hidden_size=hidden_dim // 2,  # Divide by 2 because bidirectional
+            hidden_size=hidden_dim,  # Per direction
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0,
             bidirectional=True,
             batch_first=True
         )
         
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
     
     def forward(self, 
                 src_tokens: torch.Tensor, 
@@ -71,10 +77,10 @@ class Encoder(nn.Module):
             src_lengths: Actual lengths of each sequence [batch_size]
             
         Returns:
-            encoder_outputs: Hidden states for all timesteps [batch_size, max_src_len, hidden_dim]
+            encoder_outputs: Hidden states for all timesteps [batch_size, max_src_len, hidden_dim * 2]
             encoder_hidden: Tuple of (hidden, cell) states
-                - hidden: [num_layers * 2, batch_size, hidden_dim // 2]
-                - cell: [num_layers * 2, batch_size, hidden_dim // 2]
+                - hidden: [num_layers * 2, batch_size, hidden_dim]
+                - cell: [num_layers * 2, batch_size, hidden_dim]
         """
         batch_size, max_len = src_tokens.size()
         
@@ -104,8 +110,8 @@ class Encoder(nn.Module):
             total_length=max_len
         )
         
-        # encoder_outputs: [batch_size, max_src_len, hidden_dim]
-        # encoder_hidden: (h, c) where each is [num_layers*2, batch_size, hidden_dim//2]
+        # encoder_outputs: [batch_size, max_src_len, hidden_dim * 2]
+        # encoder_hidden: (h, c) where each is [num_layers*2, batch_size, hidden_dim]
         return encoder_outputs, encoder_hidden
     
     def init_hidden(self, batch_size: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -119,8 +125,8 @@ class Encoder(nn.Module):
         Returns:
             Tuple of (hidden, cell) states
         """
-        hidden = torch.zeros(self.num_layers * 2, batch_size, self.hidden_dim // 2, device=device)
-        cell = torch.zeros(self.num_layers * 2, batch_size, self.hidden_dim // 2, device=device)
+        hidden = torch.zeros(self.num_layers * 2, batch_size, self.hidden_dim, device=device)
+        cell = torch.zeros(self.num_layers * 2, batch_size, self.hidden_dim, device=device)
         return hidden, cell
 
 
@@ -137,14 +143,14 @@ if __name__ == "__main__":
     src_tokens = torch.randint(0, vocab_size, (batch_size, max_src_len))
     src_lengths = torch.tensor([50, 45, 40, 35])
     
-    # Create encoder
-    encoder = Encoder(vocab_size=vocab_size, embed_dim=256, hidden_dim=512, num_layers=2)
+    # Create encoder with "Get To The Point" paper settings
+    encoder = Encoder(vocab_size=vocab_size, embed_dim=128, hidden_dim=256, num_layers=1)
     
     # Forward pass
     encoder_outputs, encoder_hidden = encoder(src_tokens, src_lengths)
     
     print(f"Input shape: {src_tokens.shape}")
-    print(f"Encoder outputs shape: {encoder_outputs.shape}")
-    print(f"Encoder hidden state shape: {encoder_hidden[0].shape}")
-    print(f"Encoder cell state shape: {encoder_hidden[1].shape}")
-    print("\n✅ Encoder test passed!")
+    print(f"Encoder outputs shape: {encoder_outputs.shape} (should be [batch, seq_len, 512])")
+    print(f"Encoder hidden state shape: {encoder_hidden[0].shape} (should be [2, batch, 256])")
+    print(f"Encoder cell state shape: {encoder_hidden[1].shape} (should be [2, batch, 256])")
+    print("\n✅ Encoder test passed (matches 'Get To The Point' paper)!")

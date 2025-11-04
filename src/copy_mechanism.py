@@ -32,27 +32,34 @@ class CopyMechanism(nn.Module):
         p_gen * P_vocab(word) + (1 - p_gen) * sum(P_attention(positions where word appears))
     """
     
-    def __init__(self, hidden_dim: int):
+    def __init__(self, hidden_dim: int, encoder_hidden_dim: int = None):
         """
         Initialize copy mechanism.
         
+        Following "Get To The Point" (See et al., 2017):
+        - Decoder hidden: 256
+        - Context (from bidirectional encoder): 512
+        - Input embedding: 128
+        
         Args:
-            hidden_dim: Dimension of hidden states
+            hidden_dim: Dimension of decoder hidden states (256)
+            encoder_hidden_dim: Dimension of encoder outputs (512 for bidirectional)
         """
         super(CopyMechanism, self).__init__()
         
         self.hidden_dim = hidden_dim
+        self.encoder_hidden_dim = encoder_hidden_dim or hidden_dim * 2
         
         # Linear layers to compute generation probability
         # p_gen = sigmoid(W_h * h_t + W_s * s_t + W_x * x_t + b)
         # where:
-        #   h_t = decoder hidden state
-        #   s_t = context vector from attention
-        #   x_t = decoder input embedding
+        #   h_t = decoder hidden state (256)
+        #   s_t = context vector from attention (512, bidirectional encoder)
+        #   x_t = decoder input embedding (128)
         
-        self.w_h = nn.Linear(hidden_dim, 1)  # For decoder hidden
-        self.w_s = nn.Linear(hidden_dim, 1)  # For context vector
-        self.w_x = nn.Linear(hidden_dim, 1)  # For input embedding
+        self.w_h = nn.Linear(hidden_dim, 1)  # For decoder hidden (256 -> 1)
+        self.w_s = nn.Linear(self.encoder_hidden_dim, 1)  # For context vector (512 -> 1)
+        self.w_x = nn.Linear(hidden_dim, 1)  # For input embedding (we'll use hidden_dim for flexibility)
     
     def forward(self,
                 decoder_hidden: torch.Tensor,

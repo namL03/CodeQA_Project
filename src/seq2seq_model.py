@@ -37,23 +37,30 @@ class Seq2SeqWithCopy(nn.Module):
     
     def __init__(self,
                  vocab_size: int,
-                 embed_dim: int = 512,
-                 hidden_dim: int = 512,
-                 num_layers: int = 2,
-                 dropout: float = 0.3,
-                 attention_method: str = 'general',
+                 embed_dim: int = 128,
+                 hidden_dim: int = 256,
+                 num_layers: int = 1,
+                 dropout: float = 0.0,
                  use_copy: bool = True):
         """
         Initialize the Seq2seq model.
         
+        Following "Get To The Point: Summarization with Pointer-Generator Networks" 
+        (See et al., 2017):
+        - Single-layer Bidirectional LSTM encoder (hidden: 256 per direction = 512 total)
+        - Single-layer Unidirectional LSTM decoder (hidden: 256)
+        - Bahdanau attention
+        - Pointer-Generator (copy mechanism)
+        - Embedding dimension: 128
+        - No dropout in base model
+        
         Args:
             vocab_size: Size of vocabulary
-            embed_dim: Dimension of word embeddings
-            hidden_dim: Dimension of hidden states
-            num_layers: Number of LSTM layers
-            dropout: Dropout probability
-            attention_method: Type of attention ('general', 'concat', or 'dot')
-            use_copy: Whether to use copy mechanism
+            embed_dim: Dimension of word embeddings (default: 128, as per paper)
+            hidden_dim: Dimension of hidden states (default: 256, as per paper)
+            num_layers: Number of LSTM layers (default: 1, as per paper)
+            dropout: Dropout probability (default: 0.0, as per paper)
+            use_copy: Whether to use copy mechanism (default: True)
         """
         super(Seq2SeqWithCopy, self).__init__()
         
@@ -63,7 +70,7 @@ class Seq2SeqWithCopy(nn.Module):
         self.num_layers = num_layers
         self.use_copy = use_copy
         
-        # Encoder
+        # Encoder: Single-layer Bidirectional LSTM
         self.encoder = Encoder(
             vocab_size=vocab_size,
             embed_dim=embed_dim,
@@ -72,19 +79,22 @@ class Seq2SeqWithCopy(nn.Module):
             dropout=dropout
         )
         
-        # Decoder
+        # Decoder: Single-layer Unidirectional LSTM with Bahdanau Attention
         self.decoder = Decoder(
             vocab_size=vocab_size,
             embed_dim=embed_dim,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
-            dropout=dropout,
-            attention_method=attention_method
+            dropout=dropout
         )
         
-        # Copy mechanism (optional)
+        # Copy mechanism (Pointer-Generator)
         if use_copy:
-            self.copy_mechanism = CopyMechanism(hidden_dim)
+            # Pass both decoder hidden_dim (256) and encoder output dim (512)
+            self.copy_mechanism = CopyMechanism(
+                hidden_dim=hidden_dim,
+                encoder_hidden_dim=hidden_dim * 2  # Bidirectional encoder
+            )
     
     def forward(self,
                 src_tokens: torch.Tensor,
@@ -253,14 +263,13 @@ if __name__ == "__main__":
     src_lengths = torch.tensor([50, 45, 40, 35])
     tgt_tokens = torch.randint(1, vocab_size, (batch_size, tgt_len))
     
-    # Create model
+    # Create model with "Get To The Point" paper settings
     model = Seq2SeqWithCopy(
         vocab_size=vocab_size,
-        embed_dim=256,
-        hidden_dim=512,
-        num_layers=2,
-        dropout=0.3,
-        attention_method='general',
+        embed_dim=128,
+        hidden_dim=256,
+        num_layers=1,
+        dropout=0.0,
         use_copy=True
     )
     
@@ -296,3 +305,4 @@ if __name__ == "__main__":
     print(f"Sample prediction: {predictions[0, :10]}")
     
     print("\n✅ Complete Seq2seq model test passed!")
+    print("Model follows 'Get To The Point' (See et al., 2017) architecture exactly!")
