@@ -167,16 +167,10 @@ class Vocabulary:
         Args:
             filepath: Path to save the vocabulary
         """
-        vocab_data = {
-            'word2idx': self.word2idx,
-            'idx2word': self.idx2word,
-            'word_freq': self.word_freq,
-            'min_freq': self.min_freq
-        }
-        
+
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         with open(filepath, 'wb') as f:
-            pickle.dump(vocab_data, f)
+            pickle.dump(self, f)
         
         print(f"Vocabulary saved to {filepath}")
     
@@ -194,10 +188,16 @@ class Vocabulary:
         with open(filepath, 'rb') as f:
             vocab_data = pickle.load(f)
         
-        vocab = cls(min_freq=vocab_data['min_freq'])
-        vocab.word2idx = vocab_data['word2idx']
-        vocab.idx2word = vocab_data['idx2word']
-        vocab.word_freq = vocab_data['word_freq']
+        # Handle both old format (Vocabulary object) and new format (dict)
+        if isinstance(vocab_data, cls):
+            # Old format: directly loaded Vocabulary object
+            return vocab_data
+        else:
+            # New format: dictionary with vocab data
+            vocab = cls(min_freq=vocab_data['min_freq'])
+            vocab.word2idx = vocab_data['word2idx']
+            vocab.idx2word = vocab_data['idx2word']
+            vocab.word_freq = vocab_data['word_freq']
         
         print(f"Vocabulary loaded from {filepath}")
         print(f"Vocabulary size: {len(vocab)}")

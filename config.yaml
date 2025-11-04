@@ -15,15 +15,18 @@ use_copy: true          # Enable pointer-generator (copy mechanism)
 # =============================================================================
 batch_size: 16          # Batch size (adjust based on GPU memory)
 epochs: 20              # Number of training epochs
-learning_rate: 0.15     # Initial learning rate (Adagrad optimizer)
-grad_clip: 2.0          # Gradient clipping threshold
+learning_rate: 0.15     # Initial learning rate (Adagrad optimizer, accumulator=0.1)
+grad_clip: 2.0          # Gradient clipping threshold (max gradient norm)
 teacher_forcing_ratio: 1.0  # Probability of using teacher forcing
+beam_size: 4            # Beam size for evaluation (as per paper)
+early_stopping_patience: 5  # Early stopping: stop if no improvement for N epochs
+compute_metrics_every: 1  # Compute BLEU/EM every N epochs (0 = only at end, for speed)
 
 # =============================================================================
-# Data Parameters
+# Data Parameters (optimized based on data analysis)
 # =============================================================================
-max_src_len: 400        # Maximum source sequence length (question + code)
-max_tgt_len: 50         # Maximum target sequence length (answer)
+max_src_len: 200        # Maximum source sequence length (covers 100% of examples)
+max_tgt_len: 30         # Maximum target sequence length (covers 99.8% of examples)
 min_freq: 2             # Minimum frequency for vocabulary (already built)
 
 # =============================================================================

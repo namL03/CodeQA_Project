@@ -247,6 +247,129 @@ class Seq2SeqWithCopy(nn.Module):
             )
         
         return result['predictions'], result['attn_weights']
+    
+    def beam_search(self,
+                    src_tokens: torch.Tensor,
+                    src_lengths: torch.Tensor,
+                    beam_size: int = 4,
+                    max_len: int = 50,
+                    sos_token: int = 4,
+                    eos_token: int = 5) -> torch.Tensor:
+        """
+        Generate answer using beam search (as per "Get To The Point" paper).
+        
+        Args:
+            src_tokens: Source tokens [batch_size, src_len]
+            src_lengths: Source lengths [batch_size]
+            beam_size: Beam width (default: 4 as per paper)
+            max_len: Maximum generation length
+            sos_token: Start of sequence token index
+            eos_token: End of sequence token index
+        
+        Returns:
+            predictions: Generated token indices [batch_size, gen_len]
+        """
+        self.eval()
+        batch_size = src_tokens.size(0)
+        device = src_tokens.device
+        
+        # For simplicity, process one example at a time
+        all_predictions = []
+        
+        for i in range(batch_size):
+            # Get single example
+            src = src_tokens[i:i+1]  # [1, src_len]
+            src_len = src_lengths[i:i+1]  # [1]
+            
+            # Encode
+            src_mask = (src != 0).float()
+            encoder_outputs, encoder_hidden = self.encoder(src, src_len)
+            decoder_hidden = self.decoder.init_hidden_from_encoder(encoder_hidden)
+            
+            # Initialize beam
+            # Each beam element: (score, tokens, hidden_state)
+            beams = [(0.0, [sos_token], decoder_hidden)]
+            completed_beams = []
+            
+            for t in range(max_len):
+                candidates = []
+                
+                for score, tokens, hidden in beams:
+                    # Stop if EOS already generated
+                    if tokens[-1] == eos_token:
+                        completed_beams.append((score, tokens))
+                        continue
+                    
+                    # Decode one step
+                    decoder_input = torch.tensor([[tokens[-1]]], dtype=torch.long, device=device)
+                    decoder_input_embed = self.decoder.embedding(decoder_input)
+                    
+                    output, new_hidden, attn_weights = self.decoder(
+                        decoder_input,
+                        hidden,
+                        encoder_outputs,
+                        src_mask
+                    )
+                    
+                    # Apply copy mechanism if enabled
+                    if self.use_copy:
+                        context = torch.bmm(
+                            attn_weights.unsqueeze(1),
+                            encoder_outputs
+                        ).squeeze(1)
+                        
+                        final_dist, _ = self.copy_mechanism(
+                            new_hidden[0][-1],
+                            context,
+                            decoder_input_embed.squeeze(1),
+                            output,
+                            attn_weights,
+                            src,
+                            self.vocab_size
+                        )
+                        log_probs = torch.log(final_dist + 1e-10)
+                    else:
+                        log_probs = torch.log_softmax(output, dim=1)
+                    
+                    # Get top k tokens
+                    topk_log_probs, topk_indices = torch.topk(log_probs, beam_size, dim=1)
+                    
+                    # Add to candidates
+                    for k in range(beam_size):
+                        token_id = topk_indices[0, k].item()
+                        token_score = topk_log_probs[0, k].item()
+                        new_score = score + token_score
+                        new_tokens = tokens + [token_id]
+                        candidates.append((new_score, new_tokens, new_hidden))
+                
+                # Select top beam_size candidates
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                beams = candidates[:beam_size]
+                
+                # Early stopping if all beams completed
+                if len(beams) == 0:
+                    break
+            
+            # Add remaining beams to completed
+            completed_beams.extend(beams)
+            
+            # Select best beam
+            if completed_beams:
+                completed_beams.sort(key=lambda x: x[0] / len(x[1]), reverse=True)  # Normalize by length
+                best_tokens = completed_beams[0][1]
+            else:
+                best_tokens = [sos_token, eos_token]
+            
+            all_predictions.append(best_tokens)
+        
+        # Pad predictions to same length
+        max_pred_len = max(len(p) for p in all_predictions)
+        padded_predictions = []
+        for pred in all_predictions:
+            padded = pred + [0] * (max_pred_len - len(pred))  # Pad with 0
+            padded_predictions.append(padded)
+        
+        return torch.tensor(padded_predictions, dtype=torch.long, device=device)
 
 
 # Example usage and testing

@@ -24,6 +24,8 @@ import time
 import argparse
 from tqdm import tqdm
 import sys
+from collections import Counter
+import math
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,98 +33,72 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.seq2seq_model import Seq2SeqWithCopy
 from src.vocabulary import Vocabulary
 from src.data_loader import CodeQADataLoader
+from src.dataset import CodeQADataset, collate_fn
 
 
-class CodeQADataset(torch.utils.data.Dataset):
-    """PyTorch Dataset for CodeQA."""
-    
-    def __init__(self, examples, vocab, max_src_len=400, max_tgt_len=50):
-        """
-        Initialize dataset.
-        
-        Following the paper:
-        - Max source length: 400 tokens (question + code)
-        - Max target length: 50 tokens (answer)
-        
-        Args:
-            examples: List of examples from data_loader
-            vocab: Vocabulary object
-            max_src_len: Maximum source sequence length
-            max_tgt_len: Maximum target sequence length
-        """
-        self.examples = examples
-        self.vocab = vocab
-        self.max_src_len = max_src_len
-        self.max_tgt_len = max_tgt_len
-    
-    def __len__(self):
-        return len(self.examples)
-    
-    def __getitem__(self, idx):
-        """Get a single example."""
-        example = self.examples[idx]
-        
-        # Tokenize
-        question_tokens = example['question'].lower().split()
-        code_tokens = example['code'].split()
-        answer_tokens = example['answer'].lower().split()
-        
-        # Create source: [CLS] Question [SEP] Code
-        src_tokens = ([self.vocab.CLS_TOKEN] + 
-                     question_tokens + 
-                     [self.vocab.SEP_TOKEN] + 
-                     code_tokens)
-        
-        # Truncate if too long
-        if len(src_tokens) > self.max_src_len:
-            src_tokens = src_tokens[:self.max_src_len]
-        
-        # Create target: [SOS] Answer [EOS]
-        tgt_input = [self.vocab.SOS_TOKEN] + answer_tokens
-        tgt_output = answer_tokens + [self.vocab.EOS_TOKEN]
-        
-        # Truncate target
-        if len(tgt_input) > self.max_tgt_len:
-            tgt_input = tgt_input[:self.max_tgt_len]
-            tgt_output = tgt_output[:self.max_tgt_len]
-        
-        # Encode to indices
-        src_indices = torch.tensor(self.vocab.encode(src_tokens), dtype=torch.long)
-        tgt_input_indices = torch.tensor(self.vocab.encode(tgt_input), dtype=torch.long)
-        tgt_output_indices = torch.tensor(self.vocab.encode(tgt_output), dtype=torch.long)
-        
-        return {
-            'src': src_indices,
-            'tgt_input': tgt_input_indices,
-            'tgt_output': tgt_output_indices,
-            'src_len': len(src_indices),
-            'tgt_len': len(tgt_input_indices)
-        }
-
-
-def collate_fn(batch):
+def compute_bleu(reference_tokens, hypothesis_tokens, max_n=4):
     """
-    Collate function for DataLoader.
-    Pads sequences to the same length within a batch.
+    Compute BLEU score for a single reference-hypothesis pair.
+    
+    Args:
+        reference_tokens: List of reference tokens
+        hypothesis_tokens: List of hypothesis tokens
+        max_n: Maximum n-gram order (default: 4 for BLEU-4)
+    
+    Returns:
+        BLEU score (0-100)
     """
-    src_seqs = [item['src'] for item in batch]
-    tgt_input_seqs = [item['tgt_input'] for item in batch]
-    tgt_output_seqs = [item['tgt_output'] for item in batch]
-    src_lengths = torch.tensor([item['src_len'] for item in batch], dtype=torch.long)
-    tgt_lengths = torch.tensor([item['tgt_len'] for item in batch], dtype=torch.long)
+    # Remove special tokens
+    special_tokens = {'[PAD]', '[UNK]', '[CLS]', '[SEP]', '[SOS]', '[EOS]'}
+    reference_tokens = [t for t in reference_tokens if t not in special_tokens]
+    hypothesis_tokens = [t for t in hypothesis_tokens if t not in special_tokens]
     
-    # Pad sequences (pad_sequence pads with 0 by default, which is our PAD token)
-    src_padded = pad_sequence(src_seqs, batch_first=True, padding_value=0)
-    tgt_input_padded = pad_sequence(tgt_input_seqs, batch_first=True, padding_value=0)
-    tgt_output_padded = pad_sequence(tgt_output_seqs, batch_first=True, padding_value=0)
+    # Handle empty sequences
+    if len(hypothesis_tokens) == 0 or len(reference_tokens) == 0:
+        return 0.0
     
-    return {
-        'src': src_padded,
-        'tgt_input': tgt_input_padded,
-        'tgt_output': tgt_output_padded,
-        'src_lengths': src_lengths,
-        'tgt_lengths': tgt_lengths
-    }
+    # Compute n-gram precisions (up to min of max_n and hypothesis length)
+    effective_max_n = min(max_n, len(hypothesis_tokens))
+    precisions = []
+    for n in range(1, effective_max_n + 1):
+        # Get n-grams
+        ref_ngrams = Counter([tuple(reference_tokens[i:i+n]) for i in range(len(reference_tokens) - n + 1)])
+        hyp_ngrams = Counter([tuple(hypothesis_tokens[i:i+n]) for i in range(len(hypothesis_tokens) - n + 1)])
+        
+        # Count matches (clipped)
+        matches = sum(min(hyp_ngrams[ng], ref_ngrams[ng]) for ng in hyp_ngrams)
+        total = sum(hyp_ngrams.values())
+        
+        if total == 0:
+            precisions.append(0.0)
+        else:
+            # Apply add-1 smoothing only for higher order n-grams with no matches
+            # This is similar to SacreBLEU smoothing
+            if matches == 0 and n > 1:
+                # Add epsilon smoothing for n-grams > 1
+                precisions.append(1.0 / (2.0 * total))
+            else:
+                precisions.append(matches / total if matches > 0 else 0.0)
+    
+    # Handle case where all precisions are 0
+    if all(p == 0 for p in precisions):
+        return 0.0
+    
+    # Geometric mean of precisions
+    log_precisions = [math.log(p) if p > 0 else math.log(1e-10) for p in precisions]
+    geo_mean = math.exp(sum(log_precisions) / len(log_precisions))
+    
+    # Brevity penalty
+    ref_len = len(reference_tokens)
+    hyp_len = len(hypothesis_tokens)
+    
+    if hyp_len > ref_len:
+        bp = 1.0
+    else:
+        bp = math.exp(1 - ref_len / hyp_len) if hyp_len > 0 else 0.0
+    
+    # BLEU score (0-100)
+    return 100 * bp * geo_mean
 
 
 def train_epoch(model, dataloader, optimizer, criterion, device, grad_clip=2.0, teacher_forcing_ratio=1.0):
@@ -153,9 +129,9 @@ def train_epoch(model, dataloader, optimizer, criterion, device, grad_clip=2.0, 
     
     for batch in progress_bar:
         # Move to device
-        src = batch['src'].to(device)
-        tgt_input = batch['tgt_input'].to(device)
-        tgt_output = batch['tgt_output'].to(device)
+        src = batch['src_tokens'].to(device)
+        tgt_input = batch['tgt_tokens'].to(device)
+        tgt_output = batch['labels'].to(device)
         src_lengths = batch['src_lengths'].to(device)
         
         # Zero gradients
@@ -199,31 +175,42 @@ def train_epoch(model, dataloader, optimizer, criterion, device, grad_clip=2.0, 
     return total_loss / num_batches
 
 
-def evaluate(model, dataloader, criterion, device):
+def evaluate(model, dataloader, criterion, device, vocab, beam_size=4, compute_metrics=True):
     """
     Evaluate the model on validation/test set.
+    
+    Following "Get To The Point" paper: beam size = 4 for evaluation.
     
     Args:
         model: Seq2seq model
         dataloader: Validation/test data loader
         criterion: Loss function
         device: Device to evaluate on
+        vocab: Vocabulary object for decoding tokens
+        beam_size: Beam size for beam search (default: 4 as per paper)
+        compute_metrics: Whether to compute BLEU/EM (slow). Set False for faster validation.
     
     Returns:
-        Average loss
+        Dictionary with 'loss', 'bleu', and 'exact_match' scores
+        (bleu and exact_match are None if compute_metrics=False)
     """
     model.eval()
     total_loss = 0
     num_batches = 0
+    
+    # Metrics
+    total_bleu = 0
+    exact_matches = 0
+    total_examples = 0
     
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc="Evaluating")
         
         for batch in progress_bar:
             # Move to device
-            src = batch['src'].to(device)
-            tgt_input = batch['tgt_input'].to(device)
-            tgt_output = batch['tgt_output'].to(device)
+            src = batch['src_tokens'].to(device)
+            tgt_input = batch['tgt_tokens'].to(device)
+            tgt_output = batch['labels'].to(device)
             src_lengths = batch['src_lengths'].to(device)
             
             # Forward pass (no teacher forcing during evaluation)
@@ -244,23 +231,72 @@ def evaluate(model, dataloader, criterion, device):
             
             # Calculate loss
             loss = criterion(logits_flat, tgt_flat)
-            
             total_loss += loss.item()
             num_batches += 1
             
+            # Compute BLEU and Exact Match (optional, can be slow)
+            if compute_metrics:
+                # Get predictions using beam search (as per "Get To The Point" paper)
+                predictions = model.beam_search(
+                    src_tokens=src,
+                    src_lengths=src_lengths,
+                    beam_size=beam_size,
+                    max_len=50
+                )  # [batch_size, pred_len]
+                
+                # Compute BLEU and Exact Match for each example in batch
+                for i in range(batch_size):
+                    # Get reference (ground truth)
+                    ref_ids = tgt_output[i].cpu().tolist()
+                    ref_tokens = vocab.decode(ref_ids)
+                    
+                    # Get hypothesis (prediction)
+                    hyp_ids = predictions[i].cpu().tolist()
+                    hyp_tokens = vocab.decode(hyp_ids)
+                    
+                    # Compute BLEU
+                    bleu_score = compute_bleu(ref_tokens, hyp_tokens)
+                    total_bleu += bleu_score
+                    
+                    # Compute Exact Match (ignoring special tokens and case)
+                    special_tokens = {'[PAD]', '[UNK]', '[CLS]', '[SEP]', '[SOS]', '[EOS]'}
+                    ref_clean = [t.lower() for t in ref_tokens if t not in special_tokens]
+                    hyp_clean = [t.lower() for t in hyp_tokens if t not in special_tokens]
+                    
+                    if ref_clean == hyp_clean:
+                        exact_matches += 1
+                    
+                    total_examples += 1
+            
+            # Update progress bar
             progress_bar.set_postfix({'loss': loss.item()})
     
-    return total_loss / num_batches
+    avg_loss = total_loss / num_batches
+    
+    if compute_metrics:
+        avg_bleu = total_bleu / total_examples if total_examples > 0 else 0.0
+        exact_match_pct = 100 * exact_matches / total_examples if total_examples > 0 else 0.0
+    else:
+        avg_bleu = None
+        exact_match_pct = None
+    
+    return {
+        'loss': avg_loss,
+        'bleu': avg_bleu,
+        'exact_match': exact_match_pct
+    }
 
 
-def save_checkpoint(model, optimizer, epoch, train_loss, val_loss, save_path):
+def save_checkpoint(model, optimizer, epoch, train_loss, val_metrics, save_path):
     """Save model checkpoint."""
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'train_loss': train_loss,
-        'val_loss': val_loss
+        'val_loss': val_metrics['loss'],
+        'val_bleu': val_metrics.get('bleu', None),  # May be None if not computed
+        'val_exact_match': val_metrics.get('exact_match', None)  # May be None if not computed
     }
     torch.save(checkpoint, save_path)
     print(f"Checkpoint saved to {save_path}")
@@ -320,11 +356,23 @@ def main():
     parser.add_argument('--teacher_forcing_ratio', type=float, default=1.0,
                        help='Teacher forcing ratio (default: 1.0)')
     
-    # Data processing arguments
-    parser.add_argument('--max_src_len', type=int, default=400,
-                       help='Maximum source sequence length')
-    parser.add_argument('--max_tgt_len', type=int, default=50,
-                       help='Maximum target sequence length')
+    # Data processing arguments (optimized based on data analysis)
+    parser.add_argument('--max_src_len', type=int, default=200,
+                       help='Maximum source sequence length (default: 200, covers 100%% of examples)')
+    parser.add_argument('--max_tgt_len', type=int, default=30,
+                       help='Maximum target sequence length (default: 30, covers 99.8%% of examples)')
+    
+    # Beam search arguments (following "Get To The Point" paper)
+    parser.add_argument('--beam_size', type=int, default=4,
+                       help='Beam size for evaluation (default: 4 as per paper)')
+    
+    # Early stopping arguments
+    parser.add_argument('--early_stopping_patience', type=int, default=5,
+                       help='Early stopping patience: stop if no improvement for N epochs (default: 5)')
+    
+    # Evaluation arguments
+    parser.add_argument('--compute_metrics_every', type=int, default=1,
+                       help='Compute BLEU/EM every N epochs (default: 1). Set to 0 to only compute at end.')
     
     # Checkpoint arguments
     parser.add_argument('--save_dir', type=str, default='saved_models',
@@ -432,9 +480,12 @@ def main():
     # Training loop
     print("\n" + "=" * 80)
     print("Starting training...")
+    print(f"Early stopping patience: {args.early_stopping_patience} epochs")
+    print(f"Beam size for evaluation: {args.beam_size}")
     print("=" * 80)
     
     best_val_loss = float('inf')
+    epochs_without_improvement = 0
     
     for epoch in range(start_epoch, args.epochs):
         print(f"\nEpoch {epoch + 1}/{args.epochs}")
@@ -449,14 +500,29 @@ def main():
             teacher_forcing_ratio=args.teacher_forcing_ratio
         )
         
+        # Decide whether to compute metrics this epoch
+        compute_metrics = (args.compute_metrics_every > 0 and 
+                          (epoch + 1) % args.compute_metrics_every == 0)
+        
         # Evaluate
-        val_loss = evaluate(model, dev_loader, criterion, args.device)
+        val_metrics = evaluate(
+            model, dev_loader, criterion, args.device, vocab, 
+            beam_size=args.beam_size,
+            compute_metrics=compute_metrics
+        )
+        val_loss = val_metrics['loss']
+        val_bleu = val_metrics['bleu']
+        val_exact_match = val_metrics['exact_match']
         
         epoch_time = time.time() - start_time
         
+        # Print results
         print(f"\nEpoch {epoch + 1} completed in {epoch_time:.2f}s")
         print(f"Train Loss: {train_loss:.4f}")
-        print(f"Val Loss: {val_loss:.4f}")
+        if val_bleu is not None:
+            print(f"Val Loss: {val_loss:.4f} | BLEU: {val_bleu:.2f} | Exact Match: {val_exact_match:.2f}%")
+        else:
+            print(f"Val Loss: {val_loss:.4f} (metrics not computed this epoch)")
         
         # Save checkpoint
         if (epoch + 1) % args.save_every == 0:
@@ -464,21 +530,37 @@ def main():
                 args.save_dir,
                 f'checkpoint_{args.language}_epoch{epoch + 1}.pt'
             )
-            save_checkpoint(model, optimizer, epoch, train_loss, val_loss, checkpoint_path)
+            save_checkpoint(model, optimizer, epoch, train_loss, val_metrics, checkpoint_path)
         
-        # Save best model
+        # Save best model and track early stopping (based on validation loss)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_bleu = val_bleu if val_bleu is not None else best_bleu
+            epochs_without_improvement = 0
             best_model_path = os.path.join(
                 args.save_dir,
                 f'best_model_{args.language}.pt'
             )
-            save_checkpoint(model, optimizer, epoch, train_loss, val_loss, best_model_path)
-            print(f"✅ New best model saved! Val Loss: {val_loss:.4f}")
+            save_checkpoint(model, optimizer, epoch, train_loss, val_metrics, best_model_path)
+            if val_bleu is not None:
+                print(f"✅ New best model saved! Val Loss: {val_loss:.4f} | BLEU: {val_bleu:.2f} | Exact Match: {val_exact_match:.2f}%")
+            else:
+                print(f"✅ New best model saved! Val Loss: {val_loss:.4f}")
+        else:
+            epochs_without_improvement += 1
+            print(f"⚠️  No improvement for {epochs_without_improvement} epoch(s)")
+            
+            # Early stopping check
+            if epochs_without_improvement >= args.early_stopping_patience:
+                print(f"\n🛑 Early stopping triggered! No improvement for {args.early_stopping_patience} epochs.")
+                print(f"Best validation loss: {best_val_loss:.4f}")
+                break
     
     print("\n" + "=" * 80)
     print("Training completed!")
     print(f"Best validation loss: {best_val_loss:.4f}")
+    if 'best_bleu' in locals():
+        print(f"Best BLEU score: {best_bleu:.2f}")
     print("=" * 80)
 
 
