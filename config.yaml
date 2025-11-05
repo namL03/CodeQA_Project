@@ -20,12 +20,12 @@ grad_clip: 2.0          # Gradient clipping threshold (max gradient norm)
 teacher_forcing_ratio: 1.0  # Probability of using teacher forcing
 beam_size: 4            # Beam size for evaluation (as per paper)
 early_stopping_patience: 5  # Early stopping: stop if no improvement for N epochs
-compute_metrics_every: 1  # Compute BLEU/EM every N epochs (0 = only at end, for speed)
+compute_metrics_every: 0  # Compute BLEU/EM every N epochs (0 = only at end, for speed)
 
 # =============================================================================
 # Data Parameters (optimized based on data analysis)
 # =============================================================================
-max_src_len: 200        # Maximum source sequence length (covers 100% of examples)
+max_src_len: 256        # Maximum source sequence length (covers 100% of examples)
 max_tgt_len: 30         # Maximum target sequence length (covers 99.8% of examples)
 min_freq: 2             # Minimum frequency for vocabulary (already built)
 
@@ -33,7 +33,7 @@ min_freq: 2             # Minimum frequency for vocabulary (already built)
 # Training Settings
 # =============================================================================
 save_every: 1           # Save checkpoint every N epochs
-num_workers: 4          # Number of data loading workers
+num_workers: 2          # Number of data loading workers
 device: cuda            # Device (cuda/cpu) - will auto-detect if cuda available
 
 # =============================================================================

@@ -31,7 +31,7 @@ class CodeQADataset(Dataset):
         Initialize the dataset.
         
         Based on data analysis:
-        - Max source length: 200 tokens (covers 100% of examples, 99th %tile = 155)
+        - Max source length: 256 tokens (covers 100% of examples, 99th %tile = 155)
         - Max target length: 30 tokens (covers 99.8% of examples, 99th %tile = 19)
         
         Args:
@@ -169,8 +169,8 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
 
 def create_dataloaders(train_data: List[Dict], dev_data: List[Dict], 
                        vocab, batch_size: int = 32, 
-                       max_src_len: int = 512, max_tgt_len: int = 50,
-                       num_workers: int = 0) -> Tuple[DataLoader, DataLoader]:
+                       max_src_len: int = 256, max_tgt_len: int = 30,
+                       num_workers: int = 2) -> Tuple[DataLoader, DataLoader]:
     """
     Create DataLoaders for training and validation.
     

@@ -485,6 +485,7 @@ def main():
     print("=" * 80)
     
     best_val_loss = float('inf')
+    best_bleu = None
     epochs_without_improvement = 0
     
     for epoch in range(start_epoch, args.epochs):
@@ -559,7 +560,7 @@ def main():
     print("\n" + "=" * 80)
     print("Training completed!")
     print(f"Best validation loss: {best_val_loss:.4f}")
-    if 'best_bleu' in locals():
+    if best_bleu is not None:
         print(f"Best BLEU score: {best_bleu:.2f}")
     print("=" * 80)
 
